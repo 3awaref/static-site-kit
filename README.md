@@ -20,11 +20,13 @@ deploy/homelab.*  (generated)          templates/ + new-site.sh
 ~/Projects/static-site-kit/new-site.sh ~/Projects/my-site --domain example.com
 ```
 
-This writes the `Dockerfile`, `.dockerignore`, the publish workflow,
+This writes `AGENTS.md` (instructions for coding agents, imported by a
+one-line `CLAUDE.md`), the `Dockerfile`, `.dockerignore`, the publish workflow,
 `dependabot.yml` and `deploy/homelab.{compose.yml,env.example,md}`, filling in
 the service name, the image (from the `origin` remote) and the domain. It
 creates a placeholder `site/index.html` only if `site/` doesn't exist. Existing
-files are skipped unless `--force` is given. Then put the website in `site/`
+files are skipped unless `--force` is given. If the repo already has its own
+`CLAUDE.md`, add an `@AGENTS.md` line to it. Then put the website in `site/`
 (`site/index.html` is the root document) and push to `main`.
 
 Merge `deploy/homelab.compose.yml` into the central Compose file and set up
