@@ -1,0 +1,81 @@
+name: Base image
+
+# Publishes ghcr.io/<owner>/static-site-kit:<MAJOR>. The weekly run picks up
+# nginx/Alpine security patches; sites rebuild on their own schedule after it.
+on:
+  push:
+    branches: [main]
+    paths: ['image/**', 'test/**', '.github/workflows/base-image.yml']
+  pull_request:
+    paths: ['image/**', 'test/**', '.github/workflows/base-image.yml']
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  # Bump on breaking changes (nginx.conf behaviour, gen-csp rules). The old
+  # major tag then stops receiving rebuilds; Dependabot offers sites the new one.
+  MAJOR: '1'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: image
+          pull: true
+          load: true
+          tags: static-site:test
+
+      - name: Test gen-csp with busybox awk
+        run: docker run --rm -v "$PWD/test:/test:ro" static-site:test sh /test/run.sh
+
+      - name: Smoke test
+        run: |
+          docker run --rm static-site:test nginx -t
+          docker run -d --name smoke -p 8080:80 static-site:test
+          for i in $(seq 10); do curl -fsS http://127.0.0.1:8080/healthz && break; sleep 1; done
+          curl -fsS -D headers.txt -o /dev/null http://127.0.0.1:8080/healthz
+          cat headers.txt
+          grep -qi '^content-security-policy: default-src' headers.txt
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://127.0.0.1:8080/)" = 405
+          docker rm -f smoke
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ env.MAJOR }},enable={{is_default_branch}}
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: image
+          pull: true
+          push: ${{ github.event_name != 'pull_request' }}
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}

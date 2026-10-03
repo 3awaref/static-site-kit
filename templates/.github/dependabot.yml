@@ -1,0 +1,12 @@
+version: 2
+updates:
+  # Offers the next major of the base image (static-site-kit:N+1).
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+  # Offers the next major of the reusable workflow (@vN+1).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

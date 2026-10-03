@@ -1,0 +1,129 @@
+#!/bin/sh
+# Writes the nginx include with the Content-Security-Policy for a static site.
+#
+# Every inline <script> in every .html file under the web root is allowed by
+# its SHA-256 hash, recomputed on each image build so page edits can't silently
+# break the policy. A <script src=...> adds 'self'. Inline event handlers
+# (on...=) and javascript: URLs fail the build, since the CSP would block them.
+#
+# Extra sources come from $CSP_EXTRA (a Dockerfile ARG), for example:
+#   CSP_EXTRA="connect-src 'self'; img-src https://cdn.example"
+# Sources are appended to an existing directive (dropping its 'none'), or the
+# directive is added.
+#
+# Usage: gen-csp [webroot] [output]
+set -eu
+
+root="${1:-/usr/share/nginx/html}"
+out="${2:-/etc/nginx/csp.conf}"
+extra="${CSP_EXTRA:-}"
+
+case "$extra" in
+    *'"'* | *'\'*)
+        echo "gen-csp: CSP_EXTRA must not contain \" or \\" >&2
+        exit 1
+        ;;
+esac
+
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+
+# Each file is read as one record. Script bodies are written byte-for-byte
+# (exactly what the browser hashes) to $tmp/script.N; problems go to
+# $tmp/errors, because find -exec + doesn't reliably report awk's exit status.
+find "$root" -type f -name '*.html' -exec awk -v dir="$tmp" '
+BEGIN { RS = "\001" }
+{
+    rest = $0
+    outside = ""
+    while ((i = index(rest, "<script")) > 0) {
+        outside = outside substr(rest, 1, i - 1)
+        rest = substr(rest, i + 7)
+        gt = index(rest, ">")
+        e = index(rest, "</script>")
+        if (gt == 0 || e == 0 || e < gt) {
+            bad = bad FILENAME ": unterminated <script>\n"
+            rest = ""
+            break
+        }
+        attrs = substr(rest, 1, gt - 1)
+        body = substr(rest, gt + 1, e - gt - 1)
+        rest = substr(rest, e + 9)
+        if (attrs ~ /[ \t\r\n]src[ \t\r\n]*=/) {
+            self = 1
+            continue
+        }
+        n++
+        f = dir "/script." n
+        printf "%s", body > f
+        close(f)
+    }
+    outside = tolower(outside rest)
+    if (outside ~ /<[a-z][^>]*[ \t\r\n\/]on[a-z]+[ \t\r\n]*=/)
+        bad = bad FILENAME ": inline event handler (on...=)\n"
+    if (outside ~ /(href|src|action|formaction)[ \t\r\n]*=[ \t\r\n]*.?[ \t\r\n]*javascript:/)
+        bad = bad FILENAME ": javascript: URL\n"
+}
+END {
+    if (self) printf "" > (dir "/self")
+    if (bad != "") printf "%s", bad > (dir "/errors")
+}
+' {} +
+
+if [ -s "$tmp/errors" ]; then
+    echo "gen-csp: the CSP would block these; use addEventListener in the inline <script> instead:" >&2
+    sed 's/^/  /' "$tmp/errors" >&2
+    exit 1
+fi
+
+script_src=""
+[ -e "$tmp/self" ] && script_src="'self'"
+for f in "$tmp"/script.*; do
+    [ -e "$f" ] || continue
+    script_src="$script_src 'sha256-$(openssl dgst -sha256 -binary "$f" | openssl base64 -A)'"
+done
+[ -n "$script_src" ] || script_src="'none'"
+
+# style-src needs 'unsafe-inline' for <style> blocks and style="" attributes.
+# img-src data: covers embedded base64 images. Same-origin assets are allowed;
+# anything else (fetch, fonts or images from other hosts) goes in CSP_EXTRA.
+base="default-src 'none'
+script-src $script_src
+style-src 'self' 'unsafe-inline'
+img-src 'self' data:
+font-src 'self'
+media-src 'self'
+manifest-src 'self'
+base-uri 'none'
+form-action 'none'
+frame-ancestors 'none'"
+
+csp=$({ printf '%s\n' "$base"; printf '%s\n' "$extra" | tr ';' '\n'; } | awk -v none="'none'" '
+function add(name, list,   a, n, j) {
+    n = split(list, a, " ")
+    for (j = 1; j <= n; j++)
+        if (!((name, a[j]) in seen)) {
+            seen[name, a[j]] = 1
+            v[name] = v[name] " " a[j]
+        }
+}
+NF == 0 { next }
+{
+    name = tolower($1)
+    $1 = ""
+    if (!(name in v)) {
+        order[++k] = name
+        v[name] = ""
+    } else if (NF > 1 && v[name] == " " none) {
+        v[name] = ""
+        delete seen[name, none]
+    }
+    add(name, $0)
+}
+END {
+    for (i = 1; i <= k; i++) s = s (i > 1 ? "; " : "") order[i] v[order[i]]
+    print s
+}')
+
+printf 'add_header Content-Security-Policy "%s" always;\n' "$csp" > "$out"
+echo "gen-csp: $csp"

@@ -1,0 +1,5 @@
+# The image only needs the Dockerfile, the site and optional nginx additions.
+*
+!Dockerfile
+!site
+!nginx

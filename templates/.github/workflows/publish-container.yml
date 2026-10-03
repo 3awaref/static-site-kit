@@ -1,0 +1,20 @@
+name: Publish container
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  # Weekly rebuild after the base image's (Mondays 03:00) picks up nginx and
+  # Alpine security patches; Watchtower then redeploys the new latest.
+  schedule:
+    - cron: '0 4 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    uses: @@KIT@@/.github/workflows/publish-site.yml@v1
